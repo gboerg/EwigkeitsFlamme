@@ -1,6 +1,7 @@
 from interactions import Extension, listen, Member
 from interactions.api.events import MemberAdd
 from interactions.models.discord import guild
+import logging as l
 
 
 class Autorole(Extension):
@@ -22,19 +23,19 @@ class Autorole(Extension):
 
         # Rolle erstellen, falls sie nicht existiert
         if role is None:
-            print("[INFO] Rolle 'Flammenjünger' existiert nicht. Erstelle Rolle...")
+            l.info("[INFO] Rolle 'Flammenjünger' existiert nicht. Erstelle Rolle...")
             role = await guild.create_role(
                 name="Flammenjünger",
                 mentionable=True,
                 hoist=True,
                 color=0x00FF00
             )
-            print("[INFO] Rolle 'Flammenjünger' wurde erstellt.")
+            l.info("[INFO] Rolle 'Flammenjünger' wurde erstellt.")
 
         # Rolle hinzufügen
         try:
             # add_roles erwartet eine Liste oder ein Tupel, also Rolle in eine Liste packen
             await member.add_roles([role])
-            print(f"[INFO] Rolle '{role.name}' wurde an {member.user.username} vergeben.")
+            l.info(f"[INFO] Rolle '{role.name}' wurde an {member.user.username} vergeben.")
         except Exception as e:
-            print(f"[ERROR] Fehler beim Hinzufügen der Rolle: {e}")
+            l.info(f"[ERROR] Fehler beim Hinzufügen der Rolle: {e}")

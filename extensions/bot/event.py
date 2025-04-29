@@ -10,9 +10,8 @@ import urllib.request
 from typing import Optional, Union
 
 import aiohttp
-from crescent import event
 import interactions
-import pandas
+# import pandas
 import pytz
 from easy_pil import Editor, Font
 from interactions import (
@@ -38,6 +37,7 @@ from database import cursor, conn
 
 class Event(Extension):
     def __init__(self, bot):
+        l.info("Pre Image and URL")
         self.save_path = None
         self.image_url = None
         logging.info("Extension loaded: Event1")
@@ -212,8 +212,7 @@ class Event(Extension):
             logging.error(f"Error couldn't delete {event_id} because {e}")
         
 
-    async def create_event(self, guild_id: int, event_id: int, sender_id: int, event_title: str, event_description: str, event_time, event_duration,
-                           event_channel, location: str, cover_image_link: str, is_deleted: str):
+    async def create_event(self, guild_id: int, event_id: int, sender_id: int, event_title: str, event_description: str, event_time, event_duration, event_channel, location: str, cover_image_link: str, is_deleted: str):
         """
         Fügt ein Event in die Datenbank ein.
         """
@@ -232,8 +231,7 @@ class Event(Extension):
         except Exception as e:
             logging.error(f"Fehler beim Speichern des Events {event_id}: {e}")
 
-    async def update_event(self, event_id, event_title: Optional[str] = None, event_description: Optional[str] = None, event_time: Optional[str] = None, event_duration: Optional[str] = None,
-                           event_channel: Optional[int] = None, location: Optional[str] = None, cover_image_link: Optional[str] = None, is_deleted: Optional[str] = None):
+    async def update_event(self, event_id, event_title: Optional[str] = None, event_description: Optional[str] = None, event_time: Optional[str] = None, event_duration: Optional[str] = None, event_channel: Optional[int] = None, location: Optional[str] = None, cover_image_link: Optional[str] = None, is_deleted: Optional[str] = None):
         """
         Updatet das Event nach allen Parametern
         """
@@ -247,7 +245,7 @@ class Event(Extension):
             duration = ?,
             channel_id = ?,
             location = ?,
-            cover_image_link,
+            cover_image_link = ?,
             is_deleted = ?
         WHERE id = ?;
         """
@@ -497,10 +495,12 @@ class Event(Extension):
         except Exception as e:
             print(f"Fehler beim Bearbeiten des Events {event_id}: {e}")
 
-        # finally:
-        #     # Temporäre Datei aufräumen
-        #     if os.path.exists(temp_path):
-        #         os.remove(temp_path)
+        finally:
+            # Temporäre Datei aufräumen
+            if os.path.exists(temp_path):
+                os.remove(temp_path)
+
+    # TEST ALLES ÜBER DIESEM COMMENT GEHT
 
     @slash_command(
         name="event",
@@ -643,7 +643,7 @@ class Event(Extension):
             logging.error(f"EVENT CREATION ERROR: {e}")
 
 
-
+# code functional above 
 
 
     
@@ -724,6 +724,8 @@ class Event(Extension):
             print(f"Fehler beim Autocomplete: {e}")
             await ctx.send(choices=[])  # Stelle sicher, dass wir eine leere Antwort senden, wenn ein Fehler auftritt
     
+    #code functional
+
     @event.subcommand(
         sub_cmd_name="list",
         sub_cmd_description="Listet alle geplanten Events auf",
@@ -749,6 +751,8 @@ class Event(Extension):
             await ctx.send("\n".join(event_list))
         else:
             await ctx.send("No Events :(")
+
+# code functional above 
 
     @event.subcommand(
         sub_cmd_name="update",
@@ -874,12 +878,12 @@ class Event(Extension):
             await ctx.send(f"[EVENT | UPDATE | SLASHCOMMAND] {e}")
             l.error(f"[EVENT | UPDATE | SLASHCOMMAND] Unable to update Event: {e}")
             
-    
-    @update_event.autocomplete("event_id")
+
+    @updateEvent.autocomplete("event_id")
     async def autocomplete_event_id(self, ctx: AutocompleteContext):
         try:
             guild = ctx.guild
-            guild_id = ctx.guild_id
+            # guild_id = ctx.guild_id
 
 
 
@@ -905,7 +909,7 @@ class Event(Extension):
             print(f"Fehler beim Autocomplete: {e}")
             await ctx.send(choices=[])  # Stelle sicher, dass wir eine leere Antwort senden, wenn ein Fehler auftritt
     
-    
+    # ===================================================================================
     # @update_event.autocomplete("event_title")
     # async def autocomplete_event_title(self, ctx: AutocompleteContext):
     #     self.reload_events()

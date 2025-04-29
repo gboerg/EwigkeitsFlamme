@@ -102,7 +102,7 @@ class Welcome(Extension):
 
             # Nachrichten senden
             await member.send(embed=dmembed, files=[file])
-            await event.guild.get_channel(1315239357740879892).send(embed=clembed, files=[file])
+            await event.guild.get_channel(1363799201162723429).send(embed=clembed, files=[file])
 
 
             logging.debug(f"Nachricht erfolgreich an {member.user.username} gesendet.")

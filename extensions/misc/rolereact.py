@@ -42,8 +42,8 @@ class RoleReact(Extension):
             await ctx.defer(ephemeral=True)
             guild = ctx.guild
 
-        if not message:
-            return
+            if not message:
+                return
             
         except Exception as e:
             await ctx.send(f"Failed to add Reaction {e}")
