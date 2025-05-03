@@ -770,6 +770,9 @@ class Member(Extension):
                     await ticket_channel.send(f"🎫 Ticket wurde von {ctx.member.display_name} übernommen.")
                     await ctx.send(f"Ticket erfolgreich von {ctx.member.user.username} übernommen.")
                     return
+                
+            case "ticket_reopen":
+                await ctx.send("Das Ticket ist jetzt wieder geöffnet")
 
 
                 try: 
