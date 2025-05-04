@@ -6,6 +6,7 @@ import logging as l
 from math import perm
 import os
 from queue import Empty
+from datetime import datetime
 import threading
 from time import sleep
 import time
@@ -13,16 +14,18 @@ from types import NoneType
 from typing import Optional
 
 from easy_pil import Editor, Font
-from interactions import Embed, AutocompleteContext, BaseContext, Button, ButtonStyle, ChannelType, Client, ComponentContext, Extension, File, Guild, Message, OptionType, PermissionOverwrite, Permissions, Reaction, ReactionUsers, SlashCommand, SlashContext, check, component_callback, listen, slash_command, slash_option, StringSelectMenu, StringSelectOption
+from interactions import ActionRow, Embed, AutocompleteContext, BaseContext, Button, ButtonStyle, ChannelType, Client, ComponentContext, Extension, File, Guild, Message, OptionType, PermissionOverwrite, Permissions, Reaction, ReactionUsers, SlashCommand, SlashContext, check, component_callback, listen, slash_command, slash_option, StringSelectMenu, StringSelectOption
 import interactions
 from interactions.api.events import MessageCreate, Component
 import pytz
+import asyncio
 
 from database import conn, cursor
 
 class Member(Extension):
     def __init__(self, bot):
         self.bot = bot
+        self.claim_channel_lock = asyncio.Lock()
         l.info("[MEMBER] Initializing SQL database...")
         cursor.executescript("""
             CREATE TABLE IF NOT EXISTS users (
@@ -43,9 +46,13 @@ class Member(Extension):
                 user_id INT,
                 total_ticket_count INT,
                 ticket_channel_id INT,
+                ticket_message_id INT,
+                ticket_archive INT,
                 claim_channel_id INT,
                 closed_channel_id INT,
-                stuff_member_id INT
+                stuff_member_id INT,
+                claim_message_id INT,
+                claim_confirm_message_id INT
             );
         """)
         conn.commit()
@@ -55,21 +62,24 @@ class Member(Extension):
     def setup(bot):
         Member(bot)
     
-    async def create_ticket(self, guild_id: int, user_id: int, total_ticket_count:int, ticket_channel_id: int, claim_channel_id: Optional[int] = None, closed_channel_id: Optional[int] = None, stuff_member_id: Optional[int] = None):
+    async def create_ticket(self, guild_id: int, user_id: int, total_ticket_count:int, ticket_channel_id: int, ticket_message_id: Optional[int] = None, ticket_archive, claim_channel_id: Optional[int] = None, closed_channel_id: Optional[int] = None, stuff_member_id: Optional[int] = None, claim_message_id: Optional[int]= None, claim_confirm_message_id: Optional[int] = None):
         """ [SQL] [TICKETS] : Create or update ticket in DB """
         insert_query = """
             INSERT INTO tickets (
-                guild_id, user_id, total_ticket_count, ticket_channel_id, claim_channel_id, closed_channel_id, stuff_member_id
-            ) VALUES (?, ?, ?, ?, ?, ?, ?);
+                guild_id, user_id, total_ticket_count, ticket_channel_id, ticket_message_id, claim_channel_id, closed_channel_id, stuff_member_id, claim_message_id, claim_confirm_message_id
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
         """
         params = (
             guild_id,
             user_id,
             total_ticket_count,
             ticket_channel_id,
+            ticket_message_id,
             claim_channel_id,
             closed_channel_id,
-            stuff_member_id
+            stuff_member_id,
+            claim_message_id,
+            claim_confirm_message_id
         )
 
         try:
@@ -79,7 +89,7 @@ class Member(Extension):
         except Exception as e:
             l.error(f"[TICKET | DB] Error during ticket creation: {e}")
 
-    async def update_ticket(self, guild_id: int, user_id: int, total_ticket_count: Optional [int] = None, ticket_channel_id: Optional[int] = None, claim_channel_id: Optional[int] = None, closed_channel_id: Optional[int] = None, stuff_member_id: Optional[int] = None):
+    async def update_ticket(self, guild_id: int, user_id: int, total_ticket_count: Optional [int] = None, ticket_channel_id: Optional[int] = None, ticket_message_id: Optional[int] = None, claim_channel_id: Optional[int] = None, closed_channel_id: Optional[int] = None, stuff_member_id: Optional[int] = None, claim_message_id: Optional[int] = None, claim_confirm_message_id: Optional[int] = None):
         try:
 
             tickets = await self.get_ticket_user(guild_id, user_id) 
@@ -91,6 +101,7 @@ class Member(Extension):
             ticket_channel_id = ticket_channel_id if ticket_channel_id is not None else tickets["ticket_channel_id"]
             claim_channel_id = claim_channel_id if claim_channel_id is not None else tickets["claim_channel_id"]
             closed_channel_id = closed_channel_id if closed_channel_id is not None else tickets["closed_channel_id"]
+            # claim_message_id = claim_message_id if claim_message_id is not None else tickets["claim_message_id"]
 
             """
             [TICKET | DB] Updatet das Ticket mit den mitgegebenen Parametern - wenn kein Parameter mitgegeben wird  
@@ -100,12 +111,15 @@ class Member(Extension):
                 UPDATE tickets 
                 SET total_ticket_count = ?,
                     ticket_channel_id = ?,
+                    ticket_message_id = ?,
                     claim_channel_id = ?,
                     closed_channel_id = ?,
-                    stuff_member_id = ?
+                    stuff_member_id = ?,
+                    claim_message_id = ?,
+                    claim_confirm_message_id = ?
                 WHERE guild_id = ? AND user_id = ?;
                 """
-            params = (total_ticket_count, ticket_channel_id, claim_channel_id, closed_channel_id, stuff_member_id, guild_id, user_id)
+            params = (total_ticket_count, ticket_channel_id, ticket_message_id, claim_channel_id, closed_channel_id, stuff_member_id, claim_message_id, claim_confirm_message_id, guild_id, user_id)
             cursor.execute(update_query, params)
             conn.commit()
 
@@ -162,9 +176,12 @@ class Member(Extension):
                     "user_id": row[1],
                     "total_ticket_count": row[2],
                     "ticket_channel_id": row[3],
-                    "claim_channel_id": row[4],
-                    "closed_channel_id": row[5],
-                    "stuff_member_id": row[6]
+                    "ticket_message_id": row[4],
+                    "claim_channel_id": row[5],
+                    "closed_channel_id": row[6],
+                    "stuff_member_id": row[7],
+                    "claim_message_id": row[8],
+                    "claim_confirm_message_id": row[9]
                 }
             l.warning("[DEBUG] Kein Ticket gefunden mit diesem Channel.")
             return None
@@ -490,17 +507,21 @@ class Member(Extension):
             style=ButtonStyle.BLURPLE,
             label="Close Ticket",
         )
-
+        ticket_delete_confirm = Button(
+            custom_id="ticket_delete_confirm",
+            style=ButtonStyle.DANGER,
+            label="Löschen"
+        )
         ticket_close_confirm = Button(
             custom_id="ticket_close_confirm",
-            style=ButtonStyle.DANGER,
-            label="Ticket Schließen"
+            style=ButtonStyle.GREY,
+            label="Archivieren"
         )
 
         ticket_close_cancel = Button(
             custom_id="ticket_close_cancel",
             style=ButtonStyle.GREEN,
-            label="Ticket Nicht Schließen"
+            label="Abbrechen"
         )
 
         ticket_fb = StringSelectMenu(
@@ -514,23 +535,24 @@ class Member(Extension):
         ticket_claim = Button(
             custom_id="claim_ticket",
             style=ButtonStyle.GREEN,
-            label="Claim Ticket",
+            label="Claim",
         )
 
         ticket_release = Button(
             custom_id="ticket_release",
             style=ButtonStyle.GREY,
-            label="Let Someone else takeover",
+            label="unClaim",
         )
 
         ticket_reopen = Button(
             custom_id="ticket_reopen",
-            style=ButtonStyle.BLUE,
-            label="Reopen Ticket",
+            style=ButtonStyle.GREEN,
+            label="ReOpen",
         )
 
         return {
             "ticket_close": ticket_close,
+            "ticket_delete_confirm": ticket_delete_confirm,
             "ticket_close_confirm": ticket_close_confirm,
             "ticket_close_cancel": ticket_close_cancel,
             "ticket_claim": ticket_claim,
@@ -586,17 +608,54 @@ class Member(Extension):
                 categories[name] = cat
 
         return categories
+        
+    async def ensure_claim_channel(self, guild):
+        async with self.claim_channel_lock:
+            # Prüfe: existiert die Kategorie "claim-tickets"?
+            category = next((c for c in guild.channels if c.type == ChannelType.GUILD_CATEGORY and c.name == "claim-tickets"), None)
+
+            if category is None:
+                # Kategorie erstellen
+                category = await guild.create_category(name="claim-tickets")
+                await category.edit(permission_overwrites=[
+                    PermissionOverwrite(
+                        id=guild.id,
+                        type=0,
+                        deny=Permissions.VIEW_CHANNEL
+                    )
+                ])
+
+            # Prüfe: existiert der Textchannel "claim-tickets"?
+            text_channel = next((c for c in guild.channels if c.type == ChannelType.GUILD_TEXT and c.name == "claim-tickets"), None)
+
+            if text_channel:
+                # Falls der Channel existiert, aber nicht in der richtigen Kategorie ist → verschieben
+                if text_channel.parent_id != category.id:
+                    await text_channel.edit(parent_id=category.id)
+                return { "claim_channel": text_channel }
+
+            # Channel noch nicht da → erstellen
+            claim_channel = await guild.create_text_channel(name="claim-tickets", category=category)
+            await claim_channel.edit(permission_overwrites=[
+                PermissionOverwrite(
+                    id=guild.id,
+                    type=0,
+                    deny=Permissions.VIEW_CHANNEL
+                )
+            ])
+
+            return { "claim_channel": claim_channel }
 
     @ticket.subcommand(
         sub_cmd_name="create",
         sub_cmd_description="create a ticket",
     )
-    # @slash_option(
-    #     name="issue",
-    #     description="the issue you having - Or reason of the ticket",
-    #     opt_type=OptionType.STRING,
-    #     required=True
-    # )
+    @slash_option(
+        name="issue",
+        description="the issue you having - Or reason of the ticket",
+        opt_type=OptionType.STRING,
+        required=True
+    )
     async def createTicket(self, ctx: SlashContext):
         await ctx.defer(ephemeral=True)
         try:
@@ -604,6 +663,9 @@ class Member(Extension):
             if not guild:
                 await ctx.send("Dieser Befehl funktioniert nur in einem Server.")
                 return
+            claim_channel_data = await self.ensure_claim_channel(guild)
+            claim_channel = claim_channel_data["claim_channel"]
+
 
             categories = await self.ensure_ticket_categories(guild)
             ticket_cat = categories["tickets"]
@@ -613,7 +675,7 @@ class Member(Extension):
             member = ctx.member.user.username
             safe_name = member.lower().replace(" ", "-")
             ticket_name = f"{safe_name}-ticket"
-            c_ticket_name = f"claim-{safe_name}-ticket"
+            c_ticket_name = f"claim-ticket"
 
 
 
@@ -629,7 +691,7 @@ class Member(Extension):
 
             ticket = await guild.create_text_channel(name=ticket_name, category=ticket_cat)
             await ticket.edit_permission(overwrite=overwrite)
-            claim = await guild.create_text_channel(name=c_ticket_name, category=c_ticket_cat)
+
 
             await ctx.send(f"Dein Ticket wurde erstellt: <#{ticket.id}>")
 
@@ -639,29 +701,51 @@ class Member(Extension):
             ticket_release = buttons["ticket_release"]
             ticket_fb = buttons["ticket_fb"]
             ticket_reopen = buttons["ticket_reopen"]
+            now = datetime.now()
+            current_time = now.strftime("%H:%M:%S")
+            self.ticket_user_issue = ctx.kwargs["issue"]
+            # test = ctx.args
+            # ctx.
 
-            await ticket.send(
-                "Willkommen! Ein Teammitglied wird sich bald bei dir melden.\nNutze den Button unten, um das Ticket zu schließen.",
-                components=[ticket_close]
-            )
-            
-            ticket_claim_message = (
-                Embed(
-                    title=f"Ticket Anfrage von {member}",
-                    description=f"Klicke auf den Button, um das Ticket zu übernehmen.",
-                    color="#008000"
+            # if "issue":
+            #     return ticket_user_issue
+            try:
+                self.ticket_open_message = (
+                    Embed(
+                        title=f"Vielen Dank, dass du unser Ticket System nutzt {member} \nWenn das Problem nicht mehr besteht - Nutze den Button unten, um das Ticket zu schließen",
+                        description= f"Du hast uns folgenes Problem mitgeteilt: \n\n**{self.ticket_user_issue}**\n\nSollte sich etwas daran ändern kannst du uns das hier im Chat mitteilen",
+                    )
                 )
-                .add_field(
-                    name="Sobald das Ticket übernommen wurde, wird der Benutzer benachrichtigt.",
-                    value="TICKET SYSTEM"
+
+                self.ticket_message = await ticket.send(
+                    # "Willkommen! Ein Teammitglied wird sich bald bei dir melden.\nNutze den Button unten, um das Ticket zu schließen.",
+                    embed=self.ticket_open_message,
+                    # kwargs=ctx.kwargs,
+                    components=[ticket_close, ticket_reopen]
                 )
-            )
+                await self.ticket_message.pin()
+                
+                self.ticket_claim_message = (
+                    Embed(
+                        title=f"Ticket Anfrage von {member}",
+                        description=f"Klicke auf den Button, um das Ticket zu übernehmen.",
+                    )
+                    .add_field(
+                        name="Benutzermeldung",
+                        value=f"{self.ticket_user_issue}"
+                    )
+                    .add_field(
+                        name="Sobald das Ticket übernommen wurde, wird der Benutzer benachrichtigt.",
+                        value="TICKET SYSTEM",
+                    )
+                )
+                # claim_channel
+                self.claim_message: Message = await claim_channel.send(embed=self.ticket_claim_message, components=[ticket_claim, ticket_release])
+                claim_m_id = self.claim_message.id
 
-            # await claim.send("Klicke auf den Button, um das Ticket zu übernehmen.", components=[ticket_claim])
-            # await claim.send(f"Benutzeranfrage von **{member}**")
-            # await claim.send("Sobald das Ticket übernommen wurde, wird der Benutzer benachrichtigt.")
+            except Exception as e: 
+                await ctx.send(f"Error during ticket message send: {e}")
 
-            await claim.send(embed=ticket_claim_message, components=[ticket_claim, ticket_release])
             total_ticket_count = await self.get_ticket_user(guild_id=guild.id, user_id=ctx.author_id)
 
             if total_ticket_count is None:
@@ -671,8 +755,11 @@ class Member(Extension):
                     guild_id=guild.id,
                     user_id=ctx.author_id,
                     total_ticket_count=ttc,
+                    ticket_message_id=self.ticket_message.id,
                     ticket_channel_id=ticket.id,
-                    claim_channel_id=claim.id
+                    claim_channel_id=claim_channel.id,
+                    claim_message_id= claim_m_id,
+                    claim_confirm_message_id=1
                 )
             else:
                 # Es gibt schon einen Eintrag → hochzählen
@@ -682,7 +769,10 @@ class Member(Extension):
                     user_id=ctx.author_id,
                     total_ticket_count=ttc,
                     ticket_channel_id=ticket.id,
-                    claim_channel_id=claim.id
+                    ticket_message_id= self.ticket_message.id,
+                    claim_channel_id=claim_channel.id,
+                    claim_message_id= claim_m_id,
+                    claim_confirm_message_id=1
                 )
 
 
@@ -698,17 +788,23 @@ class Member(Extension):
     async def on_component(self, event: Component):
         ctx = event.ctx
         guild = ctx.guild
-        await ctx.defer()
+        
         buttons = self.create_ticket_buttons()
         ticket_reopen = buttons["ticket_reopen"]
         ticket_fb = buttons["ticket_fb"]
         ticket_close_confirm = buttons["ticket_close_confirm"]
         ticket_close_cancel = buttons["ticket_close_cancel"]
+        ticket_delete_confirm = buttons["ticket_delete_confirm"]
+
 
         l.info(f"[DEBUG] ctx.channel.id = {ctx.channel.id} | ctx.custom_id = {ctx.custom_id}")
 
         # Suche das Ticket per Ticket- oder Claim-Channel
         ticket_data = await self.get_ticket_by_any_channel(guild_id=guild.id, channel_id=ctx.channel.id)
+        get_user_name = ticket_data["user_id"]
+        user = await guild.fetch_member(get_user_name)
+        user_m = user.mention
+
 
         if ticket_data is None:
             await ctx.send("Fehler: Ticket nicht gefunden.")
@@ -733,47 +829,100 @@ class Member(Extension):
         categories = await self.ensure_ticket_categories(guild)
         closed_ticket_cat = categories["closed-tickets"]
 
+
+
+
+
+        get_message_id = await self.get_ticket_by_any_channel(guild_id=guild.id, channel_id=ctx.channel.id)
+        l.info(f"Claim user id = {get_message_id}")
+
+        claim_m_id = get_message_id["claim_message_id"]
+        ticket_m_id = get_message_id["ticket_channel_id"]
+        claimed_c_id = get_message_id["claim_confirm_message_id"]
+
+        claim_message_id = claim_channel.get_message(claim_m_id)
+        ticket_m_id = ticket_channel.get_message(ticket_m_id)
+        claimed_confirm_m_id = claim_channel.get_message(claimed_c_id)
+
+
+
         match ctx.custom_id:
-            case "ticket_fb":
-                await ticket_channel.send("✅ Feedback wurde abgegeben.")
+
+
 
 
             case "ticket_close":
-                await ticket_channel.send("Möchtest du dein Ticket wirklich schließen?")
-                # await ticket_channel.edit(
-                #     parent_id=closed_ticket_cat,
-                #     name=(f"closed-{ticket_channel.name}-{ttc}")
-                # )
-                # await ticket_channel.edit_permission(overwrite=overwrite)
-                # await ctx.message.edit(components=[])
-                await ctx.send(components=[ticket_close_confirm, ticket_close_cancel])
-                await ctx.send(components=ticket_fb)
+                self.to_delete = await ticket_channel.send(content="Möchtest du dein Ticket wirklich schließen", components=[
+                    ActionRow(ticket_fb),
+                    ActionRow(ticket_delete_confirm, ticket_close_confirm, ticket_close_cancel)
+                    ]
+                )
+
+            case "ticket_fb":
+                await ctx.defer()
+                content = ctx.kwargs
+                await ticket_channel.send(f"✅ Feedback wurde abgegeben. {content}")
+
+            case "ticket_close_cancel":
+                await self.to_delete.delete()
+                delayed_info_delete= await ticket_channel.send("Ticket wurde nicht geschlossen")
+                await sleep(10)
+                await delayed_info_delete.delete()
+                    
 
             case "ticket_close_confirm":
-                await ticket_channel.send("📪 Ticket wurde geschlossen.")
+                await ctx.defer()
+
+                if ctx.author.id == ticket_data["user_id"]:
+                    await ticket_channel.send(f"📪 Ticket wurde geschlossen. \nvielen Dank {user_m}, dass du unser Ticket System genutzt hast")
+
+                elif ctx.member.has_permission(Permissions.KICK_MEMBERS):
+                    await ticket_channel.send(f"Ticket wurde von {ctx.member.mention} archiviert")
+
                 await ticket_channel.edit(
                     parent_id=closed_ticket_cat,
                     name=(f"closed-{ticket_channel.name}-{ttc}")
                 )
+
                 await ticket_channel.edit_permission(overwrite=overwrite)
                 await ctx.message.edit(components=[])
-                await ticket_channel.send("Ticket wurde geschlossen - Mit deinem Feedback können wir wachsen")
-                await ctx.send("Ein Admin kann das Ticket hier wieder öffnen:", components=ticket_reopen)
 
-            case "ticket_close_cancel":
-                await ticket_channel.send("Ticket wurde nicht geschlossen")
+                await claimed_confirm_m_id.delete()
+                await claim_message_id.delete()
 
-            case "claim_ticket":
-                if ticket_data["stuff_member_id"] is None:
-                    ticket_user = ticket_data["user_id"]
-                    await self.update_ticket(guild_id=guild.id, user_id=ticket_user, stuff_member_id=ctx.member.id)
-                    await ticket_channel.send(f"🎫 Ticket wurde von {ctx.member.display_name} übernommen.")
-                    await ctx.send(f"Ticket erfolgreich von {ctx.member.user.username} übernommen.")
-                    return
+                
+            case "ticket_delete_confirm":
+                # await ctx.defer()
+
+
+                if ctx.author.id == ticket_data["user_id"]:
+
+
+                    await ticket_channel.send(f"Vielen Dank {user_m}, dieser Channel wird in Kürze gelöscht und nicht Archiviert \nSolltest du in Zukunft wieder hilfe benötigen kannst du mit: **/ticket create 'dein problem'** wieder ein Ticket eröffnen \nKehre nun wieder zurück uns bis zum nächsten mal {user}")
+                    sleep(20)
+                    await ticket_channel.delete()
+                    await claim_message_id.delete()
+                    await claimed_confirm_m_id.delete()
+                    # await claim_channel.delete()
+                #DATABASE decrease ticket count and delete last ticket 
+                elif ctx.member.has_permission(Permissions.MANAGE_CHANNELS):
+                    await ticket_channel.send("🔒 Ticket wurde vom Teammitglied gelöscht")
+                    sleep(6)
+                    await ticket_channel.delete()
+                    await claim_message_id.delete()
+                    await claimed_confirm_m_id.delete()
+                    # await claim_channel.delete()
+
+
+
+
                 
             case "ticket_reopen":
+                await ctx.defer()
+                if not ctx.member.has_permission(Permissions.KICK_MEMBERS):
+                    await ctx.send(f"Hallo {user.mention}, Nur ein ein Teammitglied kann das Ticket erneut öffnen")
+                    return
                 await ctx.send("Das Ticket ist jetzt wieder geöffnet")
-
 
                 try: 
                     stuff_member = await guild.fetch_member(ticket_data["stuff_member_id"])
@@ -787,10 +936,53 @@ class Member(Extension):
                     await ctx.send(f"Das Ticket wurde von {stuff_member} bereits übernommen")
                     return
                 
+            #  IN CLAIM CHANNEL  
+            case "claim_ticket":
+                await ctx.defer()
+                if ticket_data["stuff_member_id"] is None:
+                    ticket_member = ticket_data["user_id"]
+                    member = await guild.fetch_member(ticket_member)
+
+                    # self.ticket_open_message_edit = (
+                    #     Embed(
+                    #         title=f"Vielen Dank, dass du unser Ticket System nutzt {member} \n Wenn das Problem nicht mehr besteht - Nutze den Button unten, um das Ticket zu schließen",
+                    #         description= f"Du hast uns folgenes Problem mitgeteilt: \n \n **{self.ticket_user_issue}** \n \n Sollte sich etwas daran ändern kannst du uns das hier im Chat mitteilen",
+                    #     )
+                    #     .add_field(
+                    #         name="tesa"
+                    #     )
+                    # )
+
+
+
+                    ticket_user = ticket_data["user_id"]
+                    mention_ticket_user = await guild.fetch_member(ticket_user)
+                    mm = mention_ticket_user
+
+                    
+                    # w
+
+
+                    self.ticket_open_message.add_field(
+                        name=f"Ticket wurde übernommen von:",
+                        value=f"{ctx.member}"
+                    )
+                    # await self.ticket_message.edit(embed=self.ticket_open_message)
+                    # await ticket_channel.send(f"{mm}, dein Ticket wurde übernommen")
+                    claimed = await ticket_channel.send(f"🎫 Hallo {mm.mention}, dein Ticket wurde von {ctx.member.mention} übernommen.")
+                    await claimed.pin()
+                    claimed_confirm = await ctx.send(f"Ticket erfolgreich von {ctx.member.user.username} übernommen.")
+                    await self.update_ticket(guild_id=guild.id, user_id=ticket_user, stuff_member_id=ctx.member.id, ticket_message_id=ticket_m_id, claim_message_id=claim_m_id, claim_confirm_message_id=claimed_confirm.id)
+
+                    
+                    return
+                
             case "ticket_release":
+                await ctx.defer()
                 await ctx.send("TICKET RELEASE ACTION TRIGGERD | NO FUNCTION YET")
 
             case _:
+                await ctx.defer()
                 await ctx.send("Unbekannte Aktion.")
 
 
