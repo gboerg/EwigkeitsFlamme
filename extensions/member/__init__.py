@@ -39,6 +39,9 @@ class Member(Extension):
                 xp_needed INT,
                 first_message_at TEXT,
                 joined_at TEXT,
+                wants_tracking TEXT, /* YES / NO / Partial*/
+                partial_tracking_count INT, /* NUMBER FROM 1-?(10) - Depends on how much tracking the user wants or in bots case functionality */
+                tracking_allow_scope TEXT, /* YES = Bot uses decision on all guilds where the user and bot is in | NO =Previous decision want tracking and partial tracking_count only on guild */ 
                 PRIMARY KEY(guild_id, user_id)
             );
             CREATE TABLE IF NOT EXISTS tickets (
@@ -47,12 +50,17 @@ class Member(Extension):
                 total_ticket_count INT,
                 ticket_channel_id INT,
                 ticket_message_id INT,
-                ticket_archive INT,
+                ticket_archive_id INT,
                 claim_channel_id INT,
                 closed_channel_id INT,
                 stuff_member_id INT,
                 claim_message_id INT,
-                claim_confirm_message_id INT
+                claim_confirm_message_id INT,
+                ticket_reopen_id INT,
+                ticket_reopen_archive INT,
+                tickt_reopen_stuff_id INT,
+                ticket_reopen_confirm INT,
+                total_active_tickets INT
             );
         """)
         conn.commit()
@@ -62,12 +70,12 @@ class Member(Extension):
     def setup(bot):
         Member(bot)
     
-    async def create_ticket(self, guild_id: int, user_id: int, total_ticket_count:int, ticket_channel_id: int, ticket_message_id: Optional[int] = None, ticket_archive, claim_channel_id: Optional[int] = None, closed_channel_id: Optional[int] = None, stuff_member_id: Optional[int] = None, claim_message_id: Optional[int]= None, claim_confirm_message_id: Optional[int] = None):
+    async def create_ticket(self, guild_id: int, user_id: int, total_ticket_count:int, ticket_channel_id: int, ticket_message_id: Optional[int] = None, ticket_archive_id: Optional[int] = None, claim_channel_id: Optional[int] = None, closed_channel_id: Optional[int] = None, stuff_member_id: Optional[int] = None, claim_message_id: Optional[int]= None, claim_confirm_message_id: Optional[int] = None):
         """ [SQL] [TICKETS] : Create or update ticket in DB """
         insert_query = """
             INSERT INTO tickets (
-                guild_id, user_id, total_ticket_count, ticket_channel_id, ticket_message_id, claim_channel_id, closed_channel_id, stuff_member_id, claim_message_id, claim_confirm_message_id
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
+                guild_id, user_id, total_ticket_count, ticket_channel_id, ticket_message_id, ticket_archive_id, claim_channel_id, closed_channel_id, stuff_member_id, claim_message_id, claim_confirm_message_id
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
         """
         params = (
             guild_id,
@@ -75,6 +83,7 @@ class Member(Extension):
             total_ticket_count,
             ticket_channel_id,
             ticket_message_id,
+            ticket_archive_id,
             claim_channel_id,
             closed_channel_id,
             stuff_member_id,
@@ -89,7 +98,7 @@ class Member(Extension):
         except Exception as e:
             l.error(f"[TICKET | DB] Error during ticket creation: {e}")
 
-    async def update_ticket(self, guild_id: int, user_id: int, total_ticket_count: Optional [int] = None, ticket_channel_id: Optional[int] = None, ticket_message_id: Optional[int] = None, claim_channel_id: Optional[int] = None, closed_channel_id: Optional[int] = None, stuff_member_id: Optional[int] = None, claim_message_id: Optional[int] = None, claim_confirm_message_id: Optional[int] = None):
+    async def update_ticket(self, guild_id: int, user_id: int, total_ticket_count: Optional [int] = None, ticket_channel_id: Optional[int] = None, ticket_message_id: Optional[int] = None, ticket_archive_id: Optional[int] = None, claim_channel_id: Optional[int] = None, closed_channel_id: Optional[int] = None, stuff_member_id: Optional[int] = None, claim_message_id: Optional[int] = None, claim_confirm_message_id: Optional[int] = None):
         try:
 
             tickets = await self.get_ticket_user(guild_id, user_id) 
@@ -112,6 +121,7 @@ class Member(Extension):
                 SET total_ticket_count = ?,
                     ticket_channel_id = ?,
                     ticket_message_id = ?,
+                    ticket_archive_id = ?,
                     claim_channel_id = ?,
                     closed_channel_id = ?,
                     stuff_member_id = ?,
@@ -119,7 +129,7 @@ class Member(Extension):
                     claim_confirm_message_id = ?
                 WHERE guild_id = ? AND user_id = ?;
                 """
-            params = (total_ticket_count, ticket_channel_id, ticket_message_id, claim_channel_id, closed_channel_id, stuff_member_id, claim_message_id, claim_confirm_message_id, guild_id, user_id)
+            params = (total_ticket_count, ticket_channel_id, ticket_message_id, ticket_archive_id, claim_channel_id, closed_channel_id, stuff_member_id, claim_message_id, claim_confirm_message_id, guild_id, user_id)
             cursor.execute(update_query, params)
             conn.commit()
 
