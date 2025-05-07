@@ -101,7 +101,7 @@ class Tickets(Extension):
                     claim_confirm_message_id = ?
                 WHERE guild_id = ? AND user_id = ?;
                 """
-            params = (total_ticket_count, ticket_channel_id, ticket_message_id, ticket_archive_id, claim_channel_id, closed_channel_id, stuff_member_id, claim_message_id, claim_confirm_message_id, guild_id, user_id)
+            params = (total_ticket_count, ticket_request_time, ticket_channel_id, ticket_message_id, ticket_archive_id, claim_channel_id, closed_channel_id, stuff_member_id, claim_message_id, claim_confirm_message_id, guild_id, user_id)
             cursor.execute(update_query, params)
             conn.commit()
 
@@ -430,6 +430,7 @@ class Tickets(Extension):
                     guild_id=guild.id,
                     user_id=ctx.author_id,
                     total_ticket_count=ttc,
+                    ticket_request_time= now,
                     ticket_channel_id=ticket.id,
                     ticket_message_id=ticket_msg_id,
                     claim_channel_id=claim_channel.id,
@@ -441,6 +442,7 @@ class Tickets(Extension):
                     guild_id=guild.id,
                     user_id=ctx.author_id,
                     total_ticket_count=ttc,
+                    ticket_request_time=now,
                     ticket_channel_id=ticket.id,
                     ticket_message_id=ticket_msg_id,
                     claim_channel_id=claim_channel.id,
@@ -459,190 +461,113 @@ class Tickets(Extension):
     async def on_component(self, event: Component):
         ctx = event.ctx
         guild = ctx.guild
-        
+        await ctx.defer()
+
+        if not guild:
+            await ctx.send("Nur in einem Server nutzbar.")
+            return
+
         buttons = self.create_ticket_buttons()
-        ticket_reopen = buttons["ticket_reopen"]
-        ticket_fb = buttons["ticket_fb"]
-        ticket_close_confirm = buttons["ticket_close_confirm"]
-        ticket_close_cancel = buttons["ticket_close_cancel"]
-        ticket_delete_confirm = buttons["ticket_delete_confirm"]
 
-
-        l.info(f"[DEBUG] ctx.channel.id = {ctx.channel.id} | ctx.custom_id = {ctx.custom_id}")
-
-        # Suche das Ticket per Ticket- oder Claim-Channel
-        ticket_data = await self.get_ticket_by_any_channel(guild_id=guild.id, channel_id=ctx.channel.id)
-        get_user_name = ticket_data["user_id"]
-        user = await guild.fetch_member(get_user_name)
-        user_m = user.mention
-
-
-        if ticket_data is None:
-            await ctx.send("Fehler: Ticket nicht gefunden.")
+        # Ticketdaten aus der DB holen
+        ticket_data = await self.get_ticket_by_any_channel(guild.id, ctx.channel.id)
+        if not ticket_data:
+            await ctx.send("Fehler: Kein Ticket zu diesem Channel gefunden.")
             return
 
-        # Channels aus DB holen
-        try:
-            ticket_channel = await guild.fetch_channel(ticket_data["ticket_channel_id"])
-            claim_channel = await guild.fetch_channel(ticket_data["claim_channel_id"])
-        except Exception as e:
-            await ctx.send(f"Fehler beim Laden der Ticket-Kanäle: {e}")
-            return
+        user_id = ticket_data["user_id"]
+        user = await guild.fetch_member(user_id)
+        user_mention = user.mention if user else "Benutzer unbekannt"
 
-        ttc = ticket_data["total_ticket_count"]
+        ticket_channel = await guild.fetch_channel(ticket_data["ticket_channel_id"])
+        claim_channel = await guild.fetch_channel(ticket_data["claim_channel_id"])
 
-        # Rollenberechtigungen setzen
-        overwrite = PermissionOverwrite.for_target(ctx.author)
-        overwrite.add_allows(Permissions.VIEW_CHANNEL)
-        overwrite.add_denies(Permissions.SEND_MESSAGES)
+        ticket_msg_id = ticket_data["ticket_message_id"]
+        claim_msg_id = ticket_data["claim_message_id"]
+        claim_confirm_msg_id = ticket_data["claim_confirm_message_id"]
 
-        # Kategorien abrufen
-        categories = await self.ensure_ticket_categories(guild)
-        closed_ticket_cat = categories["closed-tickets"]
-
-
-
-
-
-        get_message_id = await self.get_ticket_by_any_channel(guild_id=guild.id, channel_id=ctx.channel.id)
-        l.info(f"Claim user id = {get_message_id}")
-
-        claim_m_id = get_message_id["claim_message_id"]
-        ticket_m_id = get_message_id["ticket_channel_id"]
-        claimed_c_id = get_message_id["claim_confirm_message_id"]
-
-        claim_message_id = claim_channel.get_message(claim_m_id)
-        ticket_m_id = ticket_channel.get_message(ticket_m_id)
-        claimed_confirm_m_id = claim_channel.get_message(claimed_c_id)
-
-
+        ticket_msg = await ticket_channel.fetch_message(ticket_msg_id) if ticket_msg_id else None
+        claim_msg = await claim_channel.fetch_message(claim_msg_id) if claim_msg_id else None
+        confirm_msg = await claim_channel.fetch_message(claim_confirm_msg_id) if claim_confirm_msg_id else None
 
         match ctx.custom_id:
-
-
-
-
             case "ticket_close":
-                self.to_delete = await ticket_channel.send(content="Möchtest du dein Ticket wirklich schließen", components=[
-                    ActionRow(ticket_fb),
-                    ActionRow(ticket_delete_confirm, ticket_close_confirm, ticket_close_cancel)
+                self.to_delete = await ticket_channel.send(
+                    content="Möchtest du dein Ticket wirklich schließen?",
+                    components=[
+                        ActionRow(buttons["ticket_fb"]),
+                        ActionRow(
+                            buttons["ticket_delete_confirm"],
+                            buttons["ticket_close_confirm"],
+                            buttons["ticket_close_cancel"]
+                        )
                     ]
                 )
 
             case "ticket_fb":
-                await ctx.defer()
-                content = ctx.kwargs
-                await ticket_channel.send(f"✅ Feedback wurde abgegeben. {content}")
+                content = ctx.values
+                await ticket_channel.send(f"✅ Feedback wurde abgegeben: {content}")
 
             case "ticket_close_cancel":
                 await self.to_delete.delete()
-                delayed_info_delete= await ticket_channel.send("Ticket wurde nicht geschlossen")
-                await sleep(10)
-                await delayed_info_delete.delete()
-                    
+                msg = await ticket_channel.send("Ticket wurde nicht geschlossen.")
+                await asyncio.sleep(10)
+                await msg.delete()
 
             case "ticket_close_confirm":
-                await ctx.defer()
-
-                if ctx.author.id == ticket_data["user_id"]:
-                    await ticket_channel.send(f"📪 Ticket wurde geschlossen. \nvielen Dank {user_m}, dass du unser Ticket System genutzt hast")
-
-                elif ctx.member.has_permission(Permissions.KICK_MEMBERS):
-                    await ticket_channel.send(f"Ticket wurde von {ctx.member.mention} archiviert")
-
                 await ticket_channel.edit(
-                    parent_id=closed_ticket_cat,
-                    name=(f"closed-{ticket_channel.name}-{ttc}")
+                    parent_id=(await self.ensure_ticket_categories(guild))["closed-tickets"].id,
+                    name=f"closed-{ticket_channel.name}-{ticket_data['total_ticket_count']}"
                 )
-
-                await ticket_channel.edit_permission(overwrite=overwrite)
+                await ticket_channel.edit_permission(
+                    PermissionOverwrite.for_target(ctx.author).add_denies(Permissions.SEND_MESSAGES)
+                )
                 await ctx.message.edit(components=[])
+                if claim_msg: await claim_msg.delete()
+                if confirm_msg: await confirm_msg.delete()
 
-                await claimed_confirm_m_id.delete()
-                await claim_message_id.delete()
+                if ctx.author.id == user_id:
+                    await ticket_channel.send(f"📪 Ticket wurde geschlossen. Vielen Dank {user_mention}!")
+                elif ctx.member.has_permission(Permissions.KICK_MEMBERS):
+                    await ticket_channel.send(f"🔒 Ticket wurde von {ctx.member.mention} archiviert.")
 
-                
             case "ticket_delete_confirm":
-                # await ctx.defer()
+                await ticket_channel.send(f"Vielen Dank {user_mention}, dieser Channel wird in Kürze gelöscht.")
+                await asyncio.sleep(10)
+                await ticket_channel.delete()
+                if claim_msg: await claim_msg.delete()
+                if confirm_msg: await confirm_msg.delete()
 
-
-                if ctx.author.id == ticket_data["user_id"]:
-
-
-                    await ticket_channel.send(f"Vielen Dank {user_m}, dieser Channel wird in Kürze gelöscht und nicht Archiviert \nSolltest du in Zukunft wieder hilfe benötigen kannst du mit: **/ticket create 'dein problem'** wieder ein Ticket eröffnen \nKehre nun wieder zurück uns bis zum nächsten mal {user}")
-                    sleep(20)
-                    await ticket_channel.delete()
-                    await claim_message_id.delete()
-                    await claimed_confirm_m_id.delete()
-                    # await claim_channel.delete()
-                #DATABASE decrease ticket count and delete last ticket 
-                elif ctx.member.has_permission(Permissions.MANAGE_CHANNELS):
-                    await ticket_channel.send("🔒 Ticket wurde vom Teammitglied gelöscht")
-                    sleep(6)
-                    await ticket_channel.delete()
-                    await claim_message_id.delete()
-                    await claimed_confirm_m_id.delete()
-                    # await claim_channel.delete()
-
-
-
-
-                
-            case "ticket_reopen":
-                await ctx.defer()
-                if not ctx.member.has_permission(Permissions.KICK_MEMBERS):
-                    await ctx.send(f"Hallo {user.mention}, Nur ein ein Teammitglied kann das Ticket erneut öffnen")
-                    return
-                await ticket_channel.add_permission(Permissions.SEND_MESSAGES)
-                await ctx.send("Das Ticket ist jetzt wieder geöffnet")
-
-
-                
-            #  IN CLAIM CHANNEL  
             case "claim_ticket":
-                await ctx.defer()
                 if ticket_data["stuff_member_id"] is None:
-                    ticket_member = ticket_data["user_id"]
-                    member = await guild.fetch_member(ticket_member)
-
-
-
-                    ticket_user = ticket_data["user_id"]
-                    mention_ticket_user = await guild.fetch_member(ticket_user)
-                    mm = mention_ticket_user
-
-
-                    self.ticket_open_message.add_field(
-                        name=f"Ticket wurde übernommen von:",
-                        value=f"{ctx.member}"
+                    await self.update_ticket(
+                        guild_id=guild.id,
+                        user_id=user_id,
+                        stuff_member_id=ctx.member.id,
+                        claim_confirm_message_id=(await ctx.send(f"Ticket erfolgreich übernommen von {ctx.member.mention}")).id
                     )
-                    # await self.ticket_message.edit(embed=self.ticket_open_message)
-                    # await ticket_channel.send(f"{mm}, dein Ticket wurde übernommen")
-                    claimed = await ticket_channel.send(f"🎫 Hallo {mm.mention}, dein Ticket wurde von {ctx.member.mention} übernommen.")
-                    await claimed.pin()
-                    claimed_confirm = await ctx.send(f"Ticket erfolgreich von {ctx.member.user.username} übernommen.")
-                    await self.update_ticket(guild_id=guild.id, user_id=ticket_user, stuff_member_id=ctx.member.id, ticket_message_id=ticket_m_id, claim_message_id=claim_m_id, claim_confirm_message_id=claimed_confirm.id)
-                try: 
-                    stuff_member = await guild.fetch_member(ticket_data["stuff_member_id"])
-                except Exception as e:
-                    await ctx.send(f"ERROR: {e}")
+                    await ticket_channel.send(f"🎫 {user_mention}, dein Ticket wurde von {ctx.member.mention} übernommen.")
+                else:
+                    staff_member = await guild.fetch_member(ticket_data["stuff_member_id"])
+                    if staff_member and staff_member.id == ctx.member.id:
+                        await ctx.send("Du hast das Ticket bereits übernommen.")
+                    else:
+                        await ctx.send(f"Dieses Ticket wurde bereits von {staff_member.mention} übernommen.")
 
-                if ticket_data["stuff_member_id"] == ctx.member.id:
-                    await ctx.send(f"DU '{stuff_member}' hast das Ticket bereits übernommen")
+            case "ticket_reopen":
+                if not ctx.member.has_permission(Permissions.KICK_MEMBERS):
+                    await ctx.send("Nur ein Teammitglied kann das Ticket erneut öffnen.")
                     return
-                elif ticket_data["stuff_member_id"] != ctx.member.id:
-                    await ctx.send(f"Das Ticket wurde von {stuff_member} bereits übernommen")
-                    return
-                    
-                
+                await ticket_channel.edit_permission(
+                    PermissionOverwrite.for_target(ctx.author).add_allows(Permissions.SEND_MESSAGES)
+                )
+                await ctx.send("Das Ticket ist wieder geöffnet.")
+
             case "ticket_release":
-                await ctx.defer()
-                await ctx.send("TICKET RELEASE ACTION TRIGGERD | NO FUNCTION YET")
+                await ctx.send("TICKET RELEASE ACTION TRIGGERED | NOT IMPLEMENTED")
 
             case _:
-                await ctx.defer()
                 await ctx.send("Unbekannte Aktion.")
-
 
     #     pass
     @ticket.subcommand(
