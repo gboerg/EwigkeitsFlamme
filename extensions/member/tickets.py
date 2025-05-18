@@ -1,6 +1,5 @@
-from datetime import datetime
+from datetime import datetime, timedelta
 import logging as l
-from datetime import datetime
 from time import sleep
 from typing import Optional
 
@@ -36,21 +35,22 @@ class Tickets(Extension):
                 stuff_member_id INT,
                 claim_message_id INT,
                 claim_confirm_message_id INT,
-                is_ticket_active INT
+                is_ticket_active INT,
+                ticket_feedback TEXT
             );
         """)
         conn.commit()
         l.info("[TICKETS] SQL table ready.")
 
-    async def create_ticket(self, guild_id: int, user_id: int, ticket_count:int, ticket_request_time: int, ticket_channel_id: int, bot_message_id: Optional[int] = None, ticket_channel_feedback_id : Optional[int] = None, ticket_message_id: Optional[int] = None, ticket_archive_id: Optional[int] = None, claim_channel_id: Optional[int] = None, closed_channel_id: Optional[int] = None, stuff_member_id: Optional[int] = None, claim_message_id: Optional[int]= None, claim_confirm_message_id: Optional[int] = None, is_ticket_active: Optional[int] = None,):
+    async def create_ticket(self, guild_id: int, user_id: int, ticket_count:int, ticket_request_time: int, ticket_channel_id: int, bot_message_id: Optional[int] = None, ticket_channel_feedback_id : Optional[int] = None, ticket_message_id: Optional[int] = None, ticket_archive_id: Optional[int] = None, claim_channel_id: Optional[int] = None, closed_channel_id: Optional[int] = None, stuff_member_id: Optional[int] = None, claim_message_id: Optional[int]= None, claim_confirm_message_id: Optional[int] = None, is_ticket_active: Optional[int] = None, ticket_feedback: Optional[str] = None):
         """ [SQL] [TICKETS] : Create or update ticket in DB """
         insert_query = """
             INSERT INTO tickets (
                 guild_id, user_id, ticket_count, ticket_request_time,
                 ticket_channel_id, bot_message_id, ticket_channel_feedback_id, ticket_message_id,
                 ticket_archive_id, claim_channel_id, closed_channel_id, stuff_member_id,
-                claim_message_id, claim_confirm_message_id, is_ticket_active
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
+                claim_message_id, claim_confirm_message_id, is_ticket_active, ticket_feedback
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
         """
 
         params = (
@@ -68,7 +68,8 @@ class Tickets(Extension):
             stuff_member_id,
             claim_message_id,
             claim_confirm_message_id,
-            is_ticket_active
+            is_ticket_active,
+            ticket_feedback
         )
 
 
@@ -106,7 +107,7 @@ class Tickets(Extension):
         result = cursor.fetchone()
         return (result[0] + 1) if result and result[0] is not None else 1
     
-    async def update_ticket(self, guild_id: int, user_id: int, ticket_count: int, ticket_request_time: Optional[int] = None, ticket_channel_id: Optional[int] = None, bot_message_id: Optional[int] = None, ticket_channel_feedback_id: Optional[int] = None, ticket_message_id: Optional[int] = None, ticket_archive_id: Optional[int] = None, claim_channel_id: Optional[int] = None, closed_channel_id: Optional[int] = None, stuff_member_id: Optional[int] = None, claim_message_id: Optional[int] = None, claim_confirm_message_id: Optional[int] = None, is_ticket_active: Optional[int] = None):
+    async def update_ticket(self, guild_id: int, user_id: int, ticket_count: int, ticket_request_time: Optional[int] = None, ticket_channel_id: Optional[int] = None, bot_message_id: Optional[int] = None, ticket_channel_feedback_id: Optional[int] = None, ticket_message_id: Optional[int] = None, ticket_archive_id: Optional[int] = None, claim_channel_id: Optional[int] = None, closed_channel_id: Optional[int] = None, stuff_member_id: Optional[int] = None, claim_message_id: Optional[int] = None, claim_confirm_message_id: Optional[int] = None, is_ticket_active: Optional[int] = None, ticket_feedback: Optional[str] = None):
             try:
                 cursor.execute("""
                     SELECT * FROM tickets
@@ -129,6 +130,7 @@ class Tickets(Extension):
                 claim_message_id = claim_message_id if claim_message_id is not None else ticket[12]
                 claim_confirm_message_id = claim_confirm_message_id if claim_confirm_message_id is not None else ticket[13]
                 is_ticket_active = is_ticket_active if is_ticket_active is not None else ticket[14]
+                ticket_feedback = ticket_feedback if ticket_feedback is not None else ticket[15]
 
                 update_query = """
                     UPDATE tickets 
@@ -143,10 +145,11 @@ class Tickets(Extension):
                         stuff_member_id = ?,
                         claim_message_id = ?,
                         claim_confirm_message_id = ?,
-                        is_ticket_active = ?
+                        is_ticket_active = ?,
+                        ticket_feedback = ?
                     WHERE guild_id = ? AND user_id = ? AND ticket_count = ?;
                 """
-                params = (ticket_request_time, ticket_channel_id, bot_message_id, ticket_channel_feedback_id, ticket_message_id, ticket_archive_id, claim_channel_id, closed_channel_id, stuff_member_id, claim_message_id, claim_confirm_message_id, is_ticket_active, guild_id, user_id, ticket_count)
+                params = (ticket_request_time, ticket_channel_id, bot_message_id, ticket_channel_feedback_id, ticket_message_id, ticket_archive_id, claim_channel_id, closed_channel_id, stuff_member_id, claim_message_id, claim_confirm_message_id, is_ticket_active, ticket_feedback, guild_id, user_id, ticket_count)
                 cursor.execute(update_query, params)
                 conn.commit()
                 l.info(f"[TICKET | DB] Ticket updated for user {user_id}#{ticket_count} with is_ticket_active={is_ticket_active}")
@@ -232,7 +235,7 @@ class Tickets(Extension):
 
         ticket_fb = StringSelectMenu(
             "Ja", "Nein", "Andere",
-            placeholder="Wurde dein Anliegen gelöst",
+            placeholder="Wurde dein Anliegen gelöst?",
             min_values=1,
             max_values=1,
             custom_id="ticket_fb",
@@ -488,11 +491,19 @@ class Tickets(Extension):
 
         user_id = ticket_data[1]
         ticket_channel = await guild.fetch_channel(ticket_data[4])
+        claim_channel = await guild.fetch_channel(ticket_data["claim_channel_id"])
         ticket_msg_id = ticket_data[7]
         bot_msg_id = ticket_data[6]
+        second_fb_id = ticket_data ["bot_message_id"]
+        claim_msg_id = ticket_data["claim_message_id"]
+        claim_msg = await claim_channel.fetch_message(claim_msg_id) if claim_msg_id else None
         ticket_msg = await ticket_channel.fetch_message(ticket_msg_id) if ticket_msg_id else None
         bot_msg = await ticket_channel.fetch_message(bot_msg_id) if bot_msg_id else None
+        second_fb = await ticket_channel.fetch_message(second_fb_id) if second_fb_id else None
         user = await guild.fetch_member(user_id)
+        berlin_tz = pytz.timezone("Europe/Berlin")
+        now_berlin = datetime.now(berlin_tz)
+        now = int(now_berlin.timestamp())
 
         match ctx.custom_id:
             case "ticket_close":
@@ -545,8 +556,27 @@ class Tickets(Extension):
                 if bot_msg and ticket_channel.parent_id == category["closed-tickets"].id and has_prefix:
                     await bot_msg.delete()
 
+                if second_fb and ticket_channel.parent_id == category["closed-tickets"].id and has_prefix:
+                    await second_fb.edit(components=[])
+                    await second_fb.edit(components=                        
+                        ActionRow(
+                            buttons["ticket_delete_confirm"],
+                            buttons["ticket_reopen"]
+                        ))
+                    
+                ticket_data = await self.get_active_ticket_for_user(guild.id, user_id)
+                if ticket_data:
+                    ticket_count = ticket_data[2]  # Index 2 ist ticket_count
+                    await self.update_ticket(
+                        guild_id=guild.id,
+                        user_id=user_id,
+                        ticket_count=ticket_count,
+                        ticket_feedback= content
+                    )
+
 
             case "ticket_close_confirm":
+                await claim_msg.delete()
                 await ticket_msg.edit(components=[])
 
                 prefixes = ["✅-", "❌-", "❔-"]
@@ -603,6 +633,26 @@ class Tickets(Extension):
                 await ticket_channel.send(notice)
 
 
+                # if new_feedback:
+                #     # await self.update_ticket(
+                #     #     guild_id=guild.id,
+                #     #     user_id=user_id,
+                #     #     ticket_count=ticket_data[2],  # <--- auch hier!
+                #     #     is_ticket_active=0,
+                #     #     bot_message_id=new_feedback.id
+                #     # )
+                #     fb_2nd_chance_timer_time = int((now_berlin+ timedelta(minutes=2)).timestamp()) 
+                #     fb_2nd_chance_timer = await ticket_channel.send(f"⏳ Timer gestartet – Die Möglichkeit Feedback zu geben endet am <t:{fb_2nd_chance_timer_time}:t> (<t:{fb_2nd_chance_timer_time}:R>)")
+                #     await asyncio.sleep(120)
+                #     await ticket_msg.edit(components=[])
+                #     await ticket_msg.edit(components=[                        
+                #         ActionRow(
+                #             buttons["ticket_delete_confirm"],
+                #             buttons["ticket_reopen"]
+                #         )])
+                #     await fb_2nd_chance_timer.delete()
+
+
                 if has_feedback_prefix:
                     await ticket_msg.edit(components=[
                         ActionRow(
@@ -621,19 +671,28 @@ class Tickets(Extension):
                             buttons["ticket_reopen"]
                         )
                     ])
+                    await self.update_ticket(
+                        guild_id=guild.id,
+                        user_id=user_id,
+                        ticket_count=ticket_data[2],  # <--- auch hier!
+                        is_ticket_active=0,
+                        bot_message_id=new_feedback.id
+                    )
+
 
                 # Feedback-Prompt löschen, falls vorhanden
                 if bot_msg:
                     await bot_msg.delete()
 
-                if new_feedback:
-                    await asyncio.sleep(60)
-                    await ticket_msg.edit(components=[])
-                    await ticket_msg.edit(components=[                        
-                        ActionRow(
-                            buttons["ticket_delete_confirm"],
-                            buttons["ticket_reopen"]
-                        )])
+                # if second_fb:
+                #     await second_fb.edit(components=[])
+                #     await second_fb.edit(components=                        
+                #         ActionRow(
+                #             buttons["ticket_delete_confirm"],
+                #             buttons["ticket_reopen"]
+                #         ))
+
+
                     
 
 
@@ -644,6 +703,7 @@ class Tickets(Extension):
                     await bot_msg.delete()
 
             case "ticket_delete_confirm":
+                await claim_msg.delete()
                 await ticket_channel.send("🔒 Ticket wird gelöscht...")
                 await asyncio.sleep(3)
                 await ticket_channel.delete()
@@ -653,7 +713,31 @@ class Tickets(Extension):
                     ticket_count=ticket_data[2],  # <--- auch hier!
                     is_ticket_active=0
                 )
+            case "claim_ticket":
+                if not ctx.member or not ctx.member.user:
+                    await ctx.send("❗ Fehler: Kein Mitglied gefunden.")
+                    return
 
+                staff_member_id = ctx.author.id
+                staff_member_name = ctx.author.user.username
+                ticket_owner = await guild.fetch_member(user_id)
+                
+                # Berechtigungen für Staff setzen
+                overwrite = PermissionOverwrite.for_target(ctx.author)
+                overwrite.add_allows(Permissions.VIEW_CHANNEL, Permissions.SEND_MESSAGES)
+                await ticket_channel.edit_permission(overwrite=overwrite)
+                
+
+                await ticket_channel.send(
+                    f"🎫 Ticket wurde von {ctx.author.mention} übernommen. {ticket_owner.mention}, du wirst bald Unterstützung erhalten."
+                )
+
+                await self.update_ticket(
+                    guild_id=guild.id,
+                    user_id=user_id,
+                    ticket_count=ticket_data[2],  # wichtig
+                    stuff_member_id=staff_member_id
+                )
 
             case _:
                 await ctx.send("Unbekannte Aktion.")
