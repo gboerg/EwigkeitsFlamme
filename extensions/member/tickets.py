@@ -633,26 +633,6 @@ class Tickets(Extension):
                 await ticket_channel.send(notice)
 
 
-                # if new_feedback:
-                #     # await self.update_ticket(
-                #     #     guild_id=guild.id,
-                #     #     user_id=user_id,
-                #     #     ticket_count=ticket_data[2],  # <--- auch hier!
-                #     #     is_ticket_active=0,
-                #     #     bot_message_id=new_feedback.id
-                #     # )
-                #     fb_2nd_chance_timer_time = int((now_berlin+ timedelta(minutes=2)).timestamp()) 
-                #     fb_2nd_chance_timer = await ticket_channel.send(f"⏳ Timer gestartet – Die Möglichkeit Feedback zu geben endet am <t:{fb_2nd_chance_timer_time}:t> (<t:{fb_2nd_chance_timer_time}:R>)")
-                #     await asyncio.sleep(120)
-                #     await ticket_msg.edit(components=[])
-                #     await ticket_msg.edit(components=[                        
-                #         ActionRow(
-                #             buttons["ticket_delete_confirm"],
-                #             buttons["ticket_reopen"]
-                #         )])
-                #     await fb_2nd_chance_timer.delete()
-
-
                 if has_feedback_prefix:
                     await ticket_msg.edit(components=[
                         ActionRow(
@@ -683,15 +663,6 @@ class Tickets(Extension):
                 # Feedback-Prompt löschen, falls vorhanden
                 if bot_msg:
                     await bot_msg.delete()
-
-                # if second_fb:
-                #     await second_fb.edit(components=[])
-                #     await second_fb.edit(components=                        
-                #         ActionRow(
-                #             buttons["ticket_delete_confirm"],
-                #             buttons["ticket_reopen"]
-                #         ))
-
 
                     
 
@@ -747,49 +718,78 @@ class Tickets(Extension):
         sub_cmd_name="delete",
         sub_cmd_description="delete a ticket"
     )
-
     @slash_option(
         name="ticket_id",
         description="Which ticket you want to delete",
-        opt_type=OptionType.STRING,
-        required=False,
-        # autocomplete=True
+        opt_type=OptionType.INTEGER,
+        required=False
     )
-    async def deleteTicket(self, ctx: SlashContext):
+    @slash_option(
+        name="all",
+        description="Delete all tickets of this guild",
+        opt_type=OptionType.BOOLEAN,
+        required=False
+    )
+    async def deleteTicket(self, ctx: SlashContext, ticket_id: Optional[int] = None, all: Optional[bool] = False):
         try:
             await ctx.defer(ephemeral=True)
-
             guild = ctx.guild
             if not guild:
-                await ctx.send("Guild Only")
+                await ctx.send("❌ Nur in einem Server nutzbar.")
                 return
             
+            if all and not ctx.author.has_permission(Permissions.BAN_MEMBERS):
+                await ctx.send(f"Unzurreichende Rechte um alle Tickets zu löschen")
+                return
+
+            if all and ctx.author.has_permission(Permissions.BAN_MEMBERS):
+                deleted = 0
+                for row in cursor.execute("SELECT ticket_channel_id, claim_channel_id FROM tickets WHERE guild_id = ?", (guild.id,)).fetchall():
+                    try:
+                        ch_id = row["ticket_channel_id"]
+                        cl_id = row["claim_channel_id"]
+                        
+                        channel = await guild.fetch_channel(ch_id)
+                        claim_channel = await guild.fetch_channel(cl_id)
+
+                        if channel:
+                            await channel.delete()
+                            deleted += 1
+                            if claim_channel:
+                                messages = await claim_channel.history(limit=0).flatten()
+                                await claim_channel.delete_messages(messages=messages)
+
+                            
+                    except Exception as e:
+                        l.warning(f"[TICKET] Fehler beim Löschen von Channel {row[0]}: {e}")
+                cursor.execute("DELETE FROM tickets WHERE guild_id = ?", (guild.id,))
+                conn.commit()
+                await ctx.send(f"✅ Es wurden {deleted} Tickets vollständig gelöscht.")
+                if row == None: 
+                    test = await ctx.send("sddsa")
+                return
+
+            # Einzelnes Ticket nach ticket_id oder Benutzernamen
             member = ctx.member.user.username
             safe_name = member.lower().replace(" ", "-")
-            ticket_name = f"{safe_name}-ticket"
+            target_ticket_name = ticket_id or f"{safe_name}-ticket"
+
             for channel in guild.channels:
-                if channel and channel.name == ticket_name:
-                    tchannel = await guild.fetch_channels()
-                    ch= [channel.id for channel in tchannel if ticket_name in channel.name]
-                    ch_id = ch[0]
-                    l.info(f" list result of ticket_ch : {ch_id}")
-                    # ticket_id = [channel.id for channel in ticket_ch]
-                    ticket_ch = await guild.fetch_channel(ch_id)
-                    # await channel.edit()
-                    await guild.delete_channel(ticket_ch)
-                    l.info(f"[TICKET] {channel.id}")
-                    await ctx.send("ticket successfully closed")
-                    break
-            else:
-                await ctx.send("ticket doesn't exist")
+                if channel and channel.name == target_ticket_name:
+                    await guild.delete_channel(channel)
+                    cursor.execute(
+                        "DELETE FROM tickets WHERE guild_id = ? AND user_id = ?",
+                        (guild.id, ctx.author_id)
+                    )
+                    conn.commit()
+                    await ctx.send("✅ Dein Ticket wurde gelöscht.")
+                    return
 
-                
-            
-        
-
+            await ctx.send("❗ Kein Ticket gefunden.")
 
         except Exception as e:
-            await ctx.send(f"Error during ticket deletion {e}")
+            await ctx.send(f"❌ Fehler beim Löschen des Tickets: `{e}`")
+
     #TODO: create autocomplete function for the user/ticket which needs to be deleted or 
     # @ticket.autocomplete("channel")
     # async def autocomplete_ticket_channel(self, ctx: AutocompleteContext):
@@ -818,5 +818,8 @@ class Tickets(Extension):
             
         except Exception as e:
             await ctx.send(f"Error during ticket closure: {e}")
+
+    
+    # async def faq_ticket(self, event: )
 
     
