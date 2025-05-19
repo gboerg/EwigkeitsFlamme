@@ -1,10 +1,11 @@
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 import logging as l
 from time import sleep
 from typing import Optional
 
+import interactions
 from interactions import ActionRow, Embed, Button, ButtonStyle, ChannelType, Extension, Message, OptionType, PermissionOverwrite, Permissions, SlashContext, listen, slash_command, slash_option, StringSelectMenu
-from interactions.api.events import Component
+from interactions.api.events import Component, ThreadCreate, ThreadDelete
 import asyncio
 
 import pytz
@@ -15,6 +16,7 @@ class Tickets(Extension):
     def __init__(self, bot):
         self.bot = bot
         self.claim_channel_lock = asyncio.Lock()
+        self.handled_threads = set()
         l.info("[TICKETS] Initializing SQL database...")
 
 
@@ -38,9 +40,86 @@ class Tickets(Extension):
                 is_ticket_active INT,
                 ticket_feedback TEXT
             );
+            CREATE TABLE IF NOT EXISTS threads (
+                guild_id INTEGER,
+                user_id INT,
+                thread_id INT,
+                thread_channel_id INT,
+                thread_user_message_id INT,
+                thread_start_message_id INT,
+                bot_thread_message_id INT,
+                thread_channel_feedback_id INT,
+                thread_feedback TEXT,
+                thread_tags TEXT,
+                is_thread_active INT
+            );
         """)
         conn.commit()
         l.info("[TICKETS] SQL table ready.")
+
+
+    async def insert_into_table(self, table_name: str, **kwargs):
+        try:
+            columns = ', '.join(kwargs.keys())
+            placeholder = ', '.join('?' for _ in kwargs)
+            values = tuple(kwargs.values())
+            query = f"INSERT INTO {table_name} ({columns}) VALUES ({placeholder})"
+            cursor.execute(query, values)
+            conn.commit()
+            l.info(f"[DB] Insert in '{table_name}' erfolgreich: {kwargs}")
+        except Exception as e:
+            l.error(f"[DB] Fehler beim Insert in '{table_name}': {e}")
+
+    async def get_db_content(self, table_name: str, where: dict) -> Optional[dict]:
+        try:
+            where_clause = ' AND '.join(f"{k}=?" for k in where)
+            query = f"SELECT * FROM {table_name} WHERE {where_clause} LIMIT 1;"
+            cursor.execute(query, tuple(where.values()))
+            row = cursor.fetchone()
+
+            if not row:
+                return None
+
+            # Spaltennamen extrahieren
+            column_names = [desc[0] for desc in cursor.description]
+            return dict(zip(column_names, row))
+
+        except Exception as e:
+            l.error(f"[DB] Fehler beim Lesen aus '{table_name}': {e}")
+            return None
+
+
+
+    async def update_table(self, table_name: str, where: dict, **kwargs):
+        try:
+            # set_clause = ', '.join(f"{k}=?" for k in kwargs)
+
+            where_clause = ' AND '.join(f"{k}=?" for k in where)
+            # values = tuple(kwargs.values()) + tuple(where.values())
+            select_query = f"SELECT * FROM {table_name} WHERE {where_clause} LIMIT 1;"
+            cursor.execute(select_query, tuple(where.values()))
+            row= cursor.fetchone()
+
+            colomn_names = [description[0] for description in cursor.description]
+
+            full_row = dict(zip(colomn_names, row))
+            full_row.update(kwargs)
+
+        # Jetzt SET-Teil bauen, ohne WHERE-Spalten
+            update_fields = {k: v for k, v in full_row.items() if k not in where}
+            set_clause = ', '.join(f"{k}=?" for k in update_fields)
+            update_values = tuple(update_fields.values()) + tuple(where.values())
+
+            update_query = f"UPDATE {table_name} SET {set_clause} WHERE {where_clause};"
+            cursor.execute(update_query, update_values)
+            conn.commit()
+
+            l.info(f"[DB] Sicheres Update in '{table_name}' erfolgreich. WHERE: {where} | SET: {update_fields}")
+
+        except Exception as e:
+            l.error(f"[DB] Fehler beim Update in '{table_name}': {e}")
+
+
 
     async def create_ticket(self, guild_id: int, user_id: int, ticket_count:int, ticket_request_time: int, ticket_channel_id: int, bot_message_id: Optional[int] = None, ticket_channel_feedback_id : Optional[int] = None, ticket_message_id: Optional[int] = None, ticket_archive_id: Optional[int] = None, claim_channel_id: Optional[int] = None, closed_channel_id: Optional[int] = None, stuff_member_id: Optional[int] = None, claim_message_id: Optional[int]= None, claim_confirm_message_id: Optional[int] = None, is_ticket_active: Optional[int] = None, ticket_feedback: Optional[str] = None):
         """ [SQL] [TICKETS] : Create or update ticket in DB """
@@ -258,6 +337,55 @@ class Tickets(Extension):
             style=ButtonStyle.GREEN,
             label="ReOpen",
         )
+        #THREAD BUTTONS
+
+        thread_close = Button(
+            disabled=False,
+            custom_id="thread_close",
+            style=ButtonStyle.BLURPLE,
+            label="Close Thread",
+        )
+
+        thread_delete_confirm = Button(
+            custom_id="thread_delete_confirm",
+            style=ButtonStyle.DANGER,
+            label="Löschen"
+        )
+        thread_close_confirm = Button(
+            custom_id="thread_close_confirm",
+            style=ButtonStyle.GREY,
+            label="Entgültig schließen"
+        )
+
+        thread_close_cancel = Button(
+            custom_id="thread_close_cancel",
+            style=ButtonStyle.GREEN,
+            label="Abbrechen"
+        )
+
+        thread_tag = StringSelectMenu(
+            "BUG", "sdaadsasd", "Andere",
+            placeholder="Tags für dein Problem",
+            min_values=1,
+            max_values=1,
+            custom_id="thread_tag",
+        )
+
+        thread_fb = StringSelectMenu(
+            "Ja", "Nein", "Andere",
+            placeholder="Wurde dein Anliegen gelöst?",
+            min_values=1,
+            max_values=1,
+            custom_id="thread_fb",
+        )
+
+
+
+        thread_reopen = Button(
+            custom_id="thread_reopen",
+            style=ButtonStyle.GREEN,
+            label="ReOpen",
+        )
 
         return {
             "ticket_close": ticket_close,
@@ -267,7 +395,16 @@ class Tickets(Extension):
             "ticket_claim": ticket_claim,
             "ticket_fb" : ticket_fb,
             "ticket_release": ticket_release,
-            "ticket_reopen": ticket_reopen
+            "ticket_reopen": ticket_reopen,
+            "thread_close": thread_close,
+            "thread_close_confirm": thread_close_confirm,
+            "thread_close_cancel": thread_close_cancel,
+            "thread_delete_confirm": thread_delete_confirm,
+            "thread_tag": thread_tag,
+            "thread_reopen": thread_reopen, 
+            "thread_fb": thread_fb
+
+
 
         }
 
@@ -478,6 +615,9 @@ class Tickets(Extension):
         ctx = event.ctx
         guild = ctx.guild
         await ctx.defer(edit_origin=True)
+
+        if not event.ctx.custom_id.startswith("ticket_"):
+            return
 
         if not guild:
             await ctx.send("Nur in einem Server nutzbar.")
@@ -713,7 +853,7 @@ class Tickets(Extension):
             case _:
                 await ctx.send("Unbekannte Aktion.")
 
-    #     pass
+
     @ticket.subcommand(
         sub_cmd_name="delete",
         sub_cmd_description="delete a ticket"
@@ -765,8 +905,8 @@ class Tickets(Extension):
                 cursor.execute("DELETE FROM tickets WHERE guild_id = ?", (guild.id,))
                 conn.commit()
                 await ctx.send(f"✅ Es wurden {deleted} Tickets vollständig gelöscht.")
-                if row == None: 
-                    test = await ctx.send("sddsa")
+                # if row == None: 
+                #     test = await ctx.send("sddsa")
                 return
 
             # Einzelnes Ticket nach ticket_id oder Benutzernamen
@@ -819,7 +959,104 @@ class Tickets(Extension):
         except Exception as e:
             await ctx.send(f"Error during ticket closure: {e}")
 
+
+    #TICKET VIA THREADS: /TODO: Thread tickets
+
+
+    @listen(ThreadCreate)
+    async def faq_ticket(self, ctx: ThreadCreate):
+        guild = ctx.thread.guild
+        user = ctx.thread.owner_id
+        t_id = ctx.thread.id
+
+            
+        
+        get_user_name = await guild.fetch_member(user)
+
+        unm = get_user_name.user.mention
+        user_name = get_user_name.user.username
+
+        await asyncio.sleep(1)
+        result_thread = await self.get_db_content("threads", {"guild_id": guild.id, "user_id": user, "thread_id":t_id })
+        if result_thread:
+            return
+        
+        # result_user = await self.get_db_content("threads", {"guild_id": guild.id, "user_id": user, "is_thread_active": 1 })
+        # if result_user:
+        #     await ctx.thread.delete()
+        #     await get_user_name.send("Du hast bereits ein Aktiven Thread")
+        #     return
+
+        buttons = self.create_ticket_buttons()
+        thread_close = buttons["thread_close"]
+        thread_tag = buttons["thread_tag"]
+
+
+
+
+
+        embed_thread = (
+            Embed(
+                title=f"Willkommen {user_name}",
+                description=f"Hier kannst du Tag zu deinem Problem angeben und es schließen wenn das Problem nicht mehr bestehen sollte.",
+            )
+        )
+        thread_first_message = await ctx.thread.send(embed=embed_thread, components=[ActionRow(thread_tag), ActionRow(thread_close)])
+        await thread_first_message.pin()
+        l.info("Thread was created")
+        await self.insert_into_table(
+            table_name="threads",
+            guild_id=guild.id,
+            user_id=user,
+            thread_id = t_id,
+            thread_channel_id=thread_first_message.channel.id,
+            is_thread_active = 1
+            # thread_user_message_id=t_id
+        )
+
+
+    @listen(Component)
+    async def on_thread_component(self, event: Component):
+        ctx = event.ctx
+        guild = ctx.guild
+        # await ctx.defer()
+
+
+        if not ctx.custom_id.startswith("thread_"):
+            return
+        
+        user = ctx.user.id
+
+
+        if not guild:
+            await ctx.send("Nur in einem Server nutzbar.")
+            return
+        
+
+
+        # guild.get
+        t_id = ctx.channel.id
+        result = await self.get_db_content("threads", {"guild_id": guild.id, "user_id": user, "thread_id":t_id })
+        buttons = self.create_ticket_buttons()
+
+        match ctx.custom_id:
+            case "thread_close":
+                f_thread = ctx.channel
+                await f_thread.edit(locked=True, archived=True)
+
     
-    # async def faq_ticket(self, event: )
+    #TICKET VIA BOT DM : /TODO: DM TICKETS aa
+    @ticket.subcommand(
+        sub_cmd_name="request",
+        sub_cmd_description="request help - No ticket required - support team will contact you"
+    )
+    async def ticket_request(self, ctx: SlashContext):
+        pass
+        
+
+
+        
+
+
 
     
